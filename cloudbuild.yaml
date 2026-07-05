@@ -1,0 +1,15 @@
+substitutions:
+  _IMAGE: "us-central1-docker.pkg.dev/nyc-taxi-driver-analytics/taxi-driver-analytics/ingest:manual"
+
+steps:
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-f"
+      - "app/ingest/Dockerfile"
+      - "-t"
+      - "${_IMAGE}"
+      - "."
+
+images:
+  - "${_IMAGE}"

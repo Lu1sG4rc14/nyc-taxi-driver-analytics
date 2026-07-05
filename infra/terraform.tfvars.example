@@ -1,0 +1,23 @@
+project_id      = "nyc-taxi-driver-analytics"
+project_name    = "NYC Taxi Driver Analytics"
+billing_account = "000000-000000-000000"
+
+# Use exactly one of these.
+org_id    = null
+folder_id = null
+
+region            = "us-central1"
+storage_location  = "US"
+bigquery_location = "US"
+
+# First apply: leave empty.
+# Second apply, after building/pushing the container: set the image URI.
+ingest_image = ""
+
+enable_scheduler   = true
+scheduler_paused   = true
+schedule_cron      = "0 7 * * *"
+schedule_time_zone = "Europe/Madrid"
+
+create_budget      = false
+monthly_budget_usd = 5
