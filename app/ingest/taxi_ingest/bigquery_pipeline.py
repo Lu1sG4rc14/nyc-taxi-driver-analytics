@@ -1,3 +1,9 @@
+"""BigQuery and Cloud Storage operations for the taxi analytics pipeline.
+
+Created: 2026-07-05
+Author: Luis G (https://github.com/Lu1sG4rc14)
+"""
+
 from __future__ import annotations
 
 import csv
@@ -13,16 +19,34 @@ from taxi_ingest.config import PipelineConfig
 
 
 class BigQueryPipeline:
+    """Wrapper around GCP clients and SQL execution for one pipeline run."""
+
     def __init__(self, config: PipelineConfig) -> None:
+        """Initializes BigQuery, Cloud Storage, and SQL directory settings.
+
+        Args:
+            config: Runtime pipeline configuration.
+        """
         self.config = config
         self.bq = bigquery.Client(project=config.project_id, location=config.bigquery_location)
         self.storage = storage.Client(project=config.project_id)
         self.sql_dir = Path(__import__("os").getenv("SQL_DIR", "sql"))
 
     def run_setup(self) -> None:
+        """Creates required BigQuery tables when they do not exist."""
         self.run_sql_file("setup/create_tables.sql")
 
     def refresh_zone_lookup(self) -> None:
+        """Downloads and reloads the taxi zone lookup reference table.
+
+        The lookup is small and public, so the pipeline reloads it with
+        `WRITE_TRUNCATE` before transformations to keep reference data current.
+
+        Raises:
+            requests.HTTPError: If the lookup CSV cannot be downloaded.
+            google.api_core.GoogleAPIError: If the GCS upload or BigQuery load
+                job fails.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = Path(tmp) / "taxi_zone_lookup.csv"
             response = requests.get(self.config.zone_lookup_url, timeout=60)
@@ -73,6 +97,15 @@ class BigQueryPipeline:
         self.bq.load_table_from_uri(uri, table_id, job_config=job_config).result()
 
     def latest_success(self, source_month: str) -> dict[str, Any] | None:
+        """Fetches the latest successful manifest row for a source month.
+
+        Args:
+            source_month: Month in `YYYY-MM` format.
+
+        Returns:
+            Manifest row as a dictionary, or `None` when the month has no
+            successful load yet.
+        """
         query = f"""
         SELECT *
         FROM `{self.config.project_id}.{self.config.ops_dataset}.ingestion_manifest`
@@ -98,18 +131,42 @@ class BigQueryPipeline:
         return dict(rows[0]) if rows else None
 
     def insert_manifest(self, row: dict[str, Any]) -> None:
+        """Appends one run manifest row to the ops dataset.
+
+        Args:
+            row: Manifest row shaped for `L100_ops.ingestion_manifest`.
+
+        Raises:
+            RuntimeError: If BigQuery returns insert errors.
+        """
         table_id = f"{self.config.project_id}.{self.config.ops_dataset}.ingestion_manifest"
         errors = self.bq.insert_rows_json(table_id, [row])
         if errors:
             raise RuntimeError(f"Failed to insert manifest row: {errors}")
 
     def upload_file(self, path: Path, bucket_name: str, object_name: str) -> str:
+        """Uploads a local file to Cloud Storage.
+
+        Args:
+            path: Local file path to upload.
+            bucket_name: Destination bucket.
+            object_name: Destination object name.
+
+        Returns:
+            `gs://` URI for the uploaded object.
+        """
         bucket = self.storage.bucket(bucket_name)
         blob = bucket.blob(object_name)
         blob.upload_from_filename(str(path))
         return f"gs://{bucket_name}/{object_name}"
 
     def load_parquet_to_staging(self, uri: str, staging_table: str) -> None:
+        """Loads a generated Parquet file into a transient staging table.
+
+        Args:
+            uri: Source `gs://` URI.
+            staging_table: Temporary table name in the staging dataset.
+        """
         table_id = f"{self.config.project_id}.{self.config.staging_dataset}.{staging_table}"
         job_config = bigquery.LoadJobConfig(
             source_format=bigquery.SourceFormat.PARQUET,
@@ -118,6 +175,12 @@ class BigQueryPipeline:
         self.bq.load_table_from_uri(uri, table_id, job_config=job_config).result()
 
     def apply_append_delta(self, staging_table: str, source_month: str) -> None:
+        """Appends staged delta rows to bronze and refreshes analytics tables.
+
+        Args:
+            staging_table: Transient staging table that contains new rows.
+            source_month: Month being processed in `YYYY-MM` format.
+        """
         self.run_sql_file(
             "bronze/append_bronze_from_staging.sql",
             staging_table=staging_table,
@@ -126,6 +189,12 @@ class BigQueryPipeline:
         self.rebuild_analytics_month(source_month)
 
     def apply_rebuild_month(self, staging_table: str, source_month: str) -> None:
+        """Replaces one month in bronze and refreshes analytics tables.
+
+        Args:
+            staging_table: Transient staging table that contains the full month.
+            source_month: Month being rebuilt in `YYYY-MM` format.
+        """
         self.run_sql_file(
             "bronze/rebuild_bronze_month_from_staging.sql",
             staging_table=staging_table,
@@ -134,6 +203,11 @@ class BigQueryPipeline:
         self.rebuild_analytics_month(source_month)
 
     def rebuild_analytics_month(self, source_month: str) -> None:
+        """Rebuilds silver and gold tables for one affected month.
+
+        Args:
+            source_month: Month to rebuild in `YYYY-MM` format.
+        """
         for sql_file in [
             "silver/rebuild_fact_trips_month.sql",
             "gold/rebuild_zone_hour_earnings_month.sql",
@@ -144,10 +218,21 @@ class BigQueryPipeline:
             self.run_sql_file(sql_file, source_month=source_month)
 
     def drop_staging_table(self, staging_table: str) -> None:
+        """Drops a transient staging table after a successful transformation.
+
+        Args:
+            staging_table: Table name in the staging dataset.
+        """
         table_id = f"{self.config.project_id}.{self.config.staging_dataset}.{staging_table}"
         self.bq.delete_table(table_id, not_found_ok=True)
 
     def run_sql_file(self, relative_path: str, **extra_context: str) -> None:
+        """Renders and executes one SQL file with pipeline context.
+
+        Args:
+            relative_path: SQL file path relative to `SQL_DIR`.
+            **extra_context: Additional placeholders required by the SQL file.
+        """
         sql = (self.sql_dir / relative_path).read_text(encoding="utf-8")
         context = {
             "project_id": self.config.project_id,
@@ -183,6 +268,30 @@ def manifest_row(
     staging_table: str | None = None,
     error_message: str | None = None,
 ) -> dict[str, Any]:
+    """Builds a manifest row for `L100_ops.ingestion_manifest`.
+
+    Args:
+        run_id: Unique run identifier.
+        source_month: Source month in `YYYY-MM` format.
+        source_url: Source file URL.
+        source_head: Source metadata collected from HTTP headers.
+        status: Final run status such as `SUCCESS`, `FAILED`, or `SKIPPED`.
+        load_mode: Load strategy used for the run.
+        started_at: Run start timestamp.
+        completed_at: Run completion timestamp.
+        source_row_count: Current source file row count.
+        previous_row_count: Previous successful source row count.
+        delta_row_count: Number of rows loaded in this run.
+        snapshot_hash: Current canonical snapshot hash.
+        previous_snapshot_hash: Previous successful snapshot hash.
+        raw_gcs_uri: GCS URI of the downloaded raw source snapshot.
+        delta_gcs_uri: GCS URI of the generated delta or rebuild Parquet.
+        staging_table: Transient BigQuery staging table name.
+        error_message: Optional truncated error text for failed/skipped runs.
+
+    Returns:
+        Dictionary ready for BigQuery JSON insertion.
+    """
     return {
         "run_id": run_id,
         "source_name": "yellow_tripdata",

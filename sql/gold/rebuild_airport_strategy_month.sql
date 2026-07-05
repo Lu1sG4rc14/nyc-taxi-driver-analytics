@@ -1,5 +1,10 @@
+-- Description: Rebuilds airport-related demand and earning patterns for one month.
+-- Created: 2026-07-05
+-- Author: Luis G (https://github.com/Lu1sG4rc14)
+
 BEGIN TRANSACTION;
 
+-- Refresh only the affected month to keep incremental runs cheap.
 DELETE FROM `{project_id}.{gold_dataset}.airport_strategy`
 WHERE source_month_dt = DATE('{source_month}-01');
 
@@ -18,8 +23,10 @@ SELECT
 FROM `{project_id}.{silver_dataset}.fact_trips`
 WHERE meta_source_month_dt = DATE('{source_month}-01')
   AND dq_analysis_eligible_lg
+  -- Airport strategy focuses on trips touching EWR, JFK, or LaGuardia zones.
   AND (flag_airport_pickup_lg OR flag_airport_dropoff_lg)
 GROUP BY source_month_dt, pickup_hour_vl, pickup_zone_ds, flag_airport_pickup_lg, flag_airport_dropoff_lg
+-- Lower threshold than zone/hour mart because airport slices are naturally narrower.
 HAVING trips_vl >= 25;
 
 COMMIT TRANSACTION;

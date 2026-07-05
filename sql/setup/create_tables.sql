@@ -1,3 +1,8 @@
+-- Description: Creates BigQuery tables for the NYC taxi analytics pipeline.
+-- Created: 2026-07-05
+-- Author: Luis G (https://github.com/Lu1sG4rc14)
+
+-- Operational manifest used for idempotency, auditability, and delta decisions.
 CREATE TABLE IF NOT EXISTS `{project_id}.{ops_dataset}.ingestion_manifest` (
   run_id STRING NOT NULL,
   source_name STRING NOT NULL,
@@ -23,6 +28,7 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{ops_dataset}.ingestion_manifest` (
 PARTITION BY DATE(started_at)
 CLUSTER BY source_name, source_month, status;
 
+-- Small public reference table reloaded from the TLC zone lookup CSV.
 CREATE TABLE IF NOT EXISTS `{project_id}.{bronze_dataset}.taxi_zone_lookup` (
   location_id INT64 NOT NULL,
   borough STRING,
@@ -31,6 +37,7 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{bronze_dataset}.taxi_zone_lookup` (
   meta_loaded_at TIMESTAMP
 );
 
+-- Bronze preserves canonicalized source fields first, then generated metadata.
 CREATE TABLE IF NOT EXISTS `{project_id}.{bronze_dataset}.yellow_trips_raw` (
   vendor_id INT64,
   pickup_datetime DATETIME,
@@ -51,9 +58,11 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{bronze_dataset}.yellow_trips_raw` (
   total_amount NUMERIC,
   congestion_surcharge NUMERIC,
   airport_fee NUMERIC,
+  -- calc_* fields are deterministic helpers derived from pickup/dropoff timestamps.
   calc_pickup_date DATE,
   calc_pickup_hour INT64,
   calc_dropoff_date DATE,
+  -- meta_* fields capture lineage needed for replay, auditing, and deduplication.
   meta_trip_key STRING NOT NULL,
   meta_source_row_number INT64 NOT NULL,
   meta_source_month DATE NOT NULL,
@@ -65,6 +74,7 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{bronze_dataset}.yellow_trips_raw` (
 PARTITION BY meta_source_month
 CLUSTER BY pickup_location_id, dropoff_location_id, calc_pickup_hour, payment_type;
 
+-- Silver applies typed naming, zone enrichment, business metrics, and quality flags.
 CREATE TABLE IF NOT EXISTS `{project_id}.{silver_dataset}.fact_trips` (
   vendor_id INT64,
   pickup_dt DATETIME,
@@ -85,6 +95,7 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{silver_dataset}.fact_trips` (
   total_amount_vl NUMERIC,
   congestion_surcharge_amount_vl NUMERIC,
   airport_fee_amount_vl NUMERIC,
+  -- meta_* columns preserve source lineage after cleaning and enrichment.
   meta_trip_id STRING NOT NULL,
   meta_source_month_dt DATE NOT NULL,
   meta_source_row_number_vl INT64 NOT NULL,
@@ -95,6 +106,7 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{silver_dataset}.fact_trips` (
   calc_pickup_day_of_week_vl INT64,
   calc_pickup_day_name_ds STRING,
   calc_duration_minutes_vl FLOAT64,
+  -- geo_* columns are added from taxi_zone_lookup.
   geo_pickup_borough_ds STRING,
   geo_pickup_zone_ds STRING,
   geo_pickup_service_zone_ds STRING,
@@ -105,8 +117,10 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{silver_dataset}.fact_trips` (
   calc_tip_pct_vl FLOAT64,
   calc_earnings_per_hour_vl FLOAT64,
   calc_earnings_per_mile_vl FLOAT64,
+  -- flag_* columns encode analytical categories used by gold marts.
   flag_airport_pickup_lg BOOL,
   flag_airport_dropoff_lg BOOL,
+  -- dq_* columns make quality filtering explicit instead of deleting raw records.
   dq_analysis_eligible_lg BOOL,
   dq_issue_count_vl INT64,
   dq_flags_ds STRING
@@ -114,6 +128,7 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{silver_dataset}.fact_trips` (
 PARTITION BY meta_source_month_dt
 CLUSTER BY pickup_location_id, dropoff_location_id, calc_pickup_hour_vl, payment_type_id;
 
+-- Gold mart: zone and hour profitability patterns.
 CREATE TABLE IF NOT EXISTS `{project_id}.{gold_dataset}.zone_hour_earnings` (
   source_month_dt DATE NOT NULL,
   pickup_borough_ds STRING,
@@ -133,6 +148,7 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{gold_dataset}.zone_hour_earnings` (
 PARTITION BY source_month_dt
 CLUSTER BY pickup_borough_ds, pickup_zone_ds, pickup_hour_vl;
 
+-- Gold mart: airport-related pickup/dropoff strategy.
 CREATE TABLE IF NOT EXISTS `{project_id}.{gold_dataset}.airport_strategy` (
   source_month_dt DATE NOT NULL,
   pickup_hour_vl INT64,
@@ -148,6 +164,7 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{gold_dataset}.airport_strategy` (
 PARTITION BY source_month_dt
 CLUSTER BY pickup_hour_vl, pickup_zone_ds;
 
+-- Gold mart: tipping behavior by payment method and pickup context.
 CREATE TABLE IF NOT EXISTS `{project_id}.{gold_dataset}.payment_tip_patterns` (
   source_month_dt DATE NOT NULL,
   pickup_borough_ds STRING,
@@ -162,6 +179,7 @@ CREATE TABLE IF NOT EXISTS `{project_id}.{gold_dataset}.payment_tip_patterns` (
 PARTITION BY source_month_dt
 CLUSTER BY pickup_borough_ds, pickup_hour_vl, payment_type_name_ds;
 
+-- Gold mart: final ranked advice rows built from analytical marts.
 CREATE TABLE IF NOT EXISTS `{project_id}.{gold_dataset}.driver_recommendations` (
   source_month_dt DATE NOT NULL,
   recommendation_rank_vl INT64,

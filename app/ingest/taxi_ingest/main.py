@@ -1,3 +1,9 @@
+"""Cloud Run Job entrypoint for incremental NYC taxi ingestion.
+
+Created: 2026-07-05
+Author: Luis G (https://github.com/Lu1sG4rc14)
+"""
+
 from __future__ import annotations
 
 import logging
@@ -23,6 +29,12 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    """Runs setup and processes all selected source months.
+
+    The selected months come from CLI arguments or Cloud Run environment
+    overrides. Each month is processed independently so that range backfills
+    can skip unpublished future files without affecting completed months.
+    """
     config = PipelineConfig.from_env()
     pipeline = BigQueryPipeline(config)
 
@@ -40,6 +52,24 @@ def main() -> None:
 
 
 def process_month(config: PipelineConfig, pipeline: BigQueryPipeline, source_month: str) -> None:
+    """Processes one monthly TLC source snapshot.
+
+    The function first checks source metadata for no-op detection, then
+    downloads the monthly file only when needed. Changed files are normalized,
+    compared against the latest successful manifest, loaded through staging,
+    and transformed into bronze, silver, and gold tables.
+
+    Args:
+        config: Runtime pipeline configuration.
+        pipeline: BigQuery and Cloud Storage operation wrapper.
+        source_month: Month to process in `YYYY-MM` format.
+
+    Raises:
+        SourceNotFound: If the source month is missing and the current
+            selection does not allow missing files.
+        Exception: Re-raises any unexpected failure after recording a failed
+            manifest row.
+    """
     run_id = uuid.uuid4().hex
     started_at = datetime.now(timezone.utc)
     url = source_url(config.source_base_url, source_month)
@@ -237,6 +267,15 @@ def process_month(config: PipelineConfig, pipeline: BigQueryPipeline, source_mon
 
 
 def _same_fingerprint(previous: dict, source_head: dict) -> bool:
+    """Checks whether source HTTP metadata matches the previous success.
+
+    Args:
+        previous: Latest successful manifest row for the month.
+        source_head: Current source metadata from `head_source`.
+
+    Returns:
+        `True` when ETag, last-modified, and content length are unchanged.
+    """
     return (
         previous.get("source_etag") == source_head.get("etag")
         and previous.get("source_last_modified") == source_head.get("last_modified")
@@ -253,6 +292,19 @@ def _decide_load_mode(
     previous_rows: int,
     force_reload: bool = False,
 ) -> tuple[str, int]:
+    """Chooses the minimal safe load mode for a changed monthly file.
+
+    Args:
+        canonical: Canonical Arrow table for the current monthly source file.
+        current_hash: Full-table hash for the current source snapshot.
+        current_rows: Current source row count.
+        previous_hash: Full-table hash from the latest successful manifest.
+        previous_rows: Source row count from the latest successful manifest.
+        force_reload: Whether to bypass no-op and append-delta detection.
+
+    Returns:
+        Tuple of load mode and zero-based start offset to load.
+    """
     if force_reload:
         return "FORCE_RELOAD", 0
 

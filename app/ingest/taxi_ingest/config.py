@@ -1,3 +1,9 @@
+"""Runtime configuration parsing for the NYC taxi ingestion job.
+
+Created: 2026-07-05
+Author: Luis G (https://github.com/Lu1sG4rc14)
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -9,12 +15,16 @@ from typing import Sequence
 
 @dataclass(frozen=True)
 class SourceSelection:
+    """Resolved list of source months and missing-file behavior."""
+
     months: tuple[str, ...]
     skip_missing_sources: bool
 
 
 @dataclass(frozen=True)
 class PipelineConfig:
+    """Immutable runtime configuration for one Cloud Run Job execution."""
+
     project_id: str
     raw_bucket: str
     staging_bucket: str
@@ -32,6 +42,23 @@ class PipelineConfig:
 
     @classmethod
     def from_env(cls, argv: Sequence[str] | None = None) -> "PipelineConfig":
+        """Builds pipeline configuration from environment variables and CLI args.
+
+        CLI source-selection arguments take precedence over environment
+        variables, allowing Cloud Run execution overrides to drive manual
+        backfills without changing the deployed job definition.
+
+        Args:
+            argv: Optional command-line arguments. When `None`, `argparse`
+                reads from the process command line.
+
+        Returns:
+            Fully resolved pipeline configuration.
+
+        Raises:
+            ValueError: If a required environment variable is missing or a date
+                range is invalid.
+        """
         args = _parse_args(argv)
         source_selection = _resolve_source_selection(args)
 
@@ -55,6 +82,14 @@ class PipelineConfig:
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    """Parses supported execution-time arguments.
+
+    Args:
+        argv: Optional argument sequence passed by tests or local execution.
+
+    Returns:
+        Parsed argparse namespace.
+    """
     parser = argparse.ArgumentParser(description="Run the NYC taxi incremental ingest pipeline.")
     parser.add_argument(
         "--source-month",
@@ -92,6 +127,20 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def _resolve_source_selection(args: argparse.Namespace) -> SourceSelection:
+    """Resolves the month or months that the current run should process.
+
+    Precedence is explicit CLI months, environment months, date range,
+    single date, and finally yesterday's month for scheduled daily runs.
+
+    Args:
+        args: Parsed command-line arguments.
+
+    Returns:
+        Source selection with normalized month strings.
+
+    Raises:
+        ValueError: If any date or month value is invalid.
+    """
     cli_months = [*args.source_month, *_split_csv(args.source_months)]
     if cli_months:
         return SourceSelection(months=_normalize_months(cli_months), skip_missing_sources=False)
@@ -114,12 +163,31 @@ def _resolve_source_selection(args: argparse.Namespace) -> SourceSelection:
 
 
 def _split_csv(value: str | None) -> list[str]:
+    """Splits a comma-separated string into non-empty trimmed values.
+
+    Args:
+        value: Raw comma-separated string.
+
+    Returns:
+        List of non-empty values.
+    """
     if not value:
         return []
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
 def _normalize_months(months: Sequence[str]) -> tuple[str, ...]:
+    """Validates, normalizes, and de-duplicates month strings.
+
+    Args:
+        months: Month values expected in `YYYY-MM` format.
+
+    Returns:
+        Tuple of unique month strings in first-seen order.
+
+    Raises:
+        ValueError: If a month cannot be parsed as `YYYY-MM`.
+    """
     normalized: list[str] = []
     seen: set[str] = set()
     for month in months:
@@ -131,10 +199,30 @@ def _normalize_months(months: Sequence[str]) -> tuple[str, ...]:
 
 
 def _month_from_date(value: date) -> str:
+    """Formats a date as its containing source month.
+
+    Args:
+        value: Date to convert.
+
+    Returns:
+        Month string in `YYYY-MM` format.
+    """
     return value.strftime("%Y-%m")
 
 
 def _month_range(start: date, end: date) -> tuple[str, ...]:
+    """Builds an inclusive range of source months.
+
+    Args:
+        start: Any date in the first month to process.
+        end: Any date in the last month to process.
+
+    Returns:
+        Inclusive tuple of month strings in `YYYY-MM` format.
+
+    Raises:
+        ValueError: If the start month is after the end month.
+    """
     start_month = date(start.year, start.month, 1)
     end_month = date(end.year, end.month, 1)
     if start_month > end_month:
@@ -152,10 +240,29 @@ def _month_range(start: date, end: date) -> tuple[str, ...]:
 
 
 def _truthy(value: str | None) -> bool:
+    """Interprets common truthy strings used in environment variables.
+
+    Args:
+        value: Raw environment variable value.
+
+    Returns:
+        `True` for common truthy strings, otherwise `False`.
+    """
     return value is not None and value.strip().lower() in {"1", "true", "t", "yes", "y"}
 
 
 def _required(name: str) -> str:
+    """Reads a required environment variable.
+
+    Args:
+        name: Environment variable name.
+
+    Returns:
+        Environment variable value.
+
+    Raises:
+        ValueError: If the value is missing or empty.
+    """
     value = os.getenv(name)
     if not value:
         raise ValueError(f"Missing required environment variable: {name}")

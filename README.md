@@ -103,6 +103,8 @@ flowchart TD
 - Artifact Registry: container image storage.
 - Cloud Billing Budget: optional guardrail.
 
+`L00_staging` is intentionally kept as a transient technical layer. Each run loads a generated delta or rebuild Parquet file into a run-scoped staging table, applies the bronze append/rebuild SQL from that safe buffer, and then drops the staging table. This keeps bronze clean, makes failed loads easier to inspect, and gives full-month reloads an atomic delete-and-replace pattern with negligible storage cost.
+
 ## Repository layout
 
 ```text

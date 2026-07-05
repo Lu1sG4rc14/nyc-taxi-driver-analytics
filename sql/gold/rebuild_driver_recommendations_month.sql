@@ -1,10 +1,16 @@
+-- Description: Rebuilds ranked driver recommendations from monthly gold marts.
+-- Created: 2026-07-05
+-- Author: Luis G (https://github.com/Lu1sG4rc14)
+
 BEGIN TRANSACTION;
 
+-- Refresh only the affected month to keep incremental runs cheap.
 DELETE FROM `{project_id}.{gold_dataset}.driver_recommendations`
 WHERE source_month_dt = DATE('{source_month}-01');
 
 INSERT INTO `{project_id}.{gold_dataset}.driver_recommendations`
 WITH zone_hour AS (
+  -- Top general opportunities ranked by the precomputed zone/hour score.
   SELECT
     source_month_dt,
     ROW_NUMBER() OVER (ORDER BY opportunity_score_vl DESC) AS recommendation_rank_vl,
@@ -27,6 +33,7 @@ WITH zone_hour AS (
   QUALIFY recommendation_rank_vl <= 10
 ),
 airport AS (
+  -- Airport advice is scored inline to combine hourly earnings with demand volume.
   SELECT
     source_month_dt,
     ROW_NUMBER() OVER (ORDER BY avg_earnings_per_hour_vl * LOG10(trips_vl + 10) DESC) AS recommendation_rank_vl,
@@ -48,6 +55,7 @@ airport AS (
   QUALIFY recommendation_rank_vl <= 5
 ),
 tips AS (
+  -- Tipping advice prioritizes high observed tip percentage with enough volume.
   SELECT
     source_month_dt,
     ROW_NUMBER() OVER (ORDER BY avg_tip_pct_vl DESC, trips_vl DESC) AS recommendation_rank_vl,

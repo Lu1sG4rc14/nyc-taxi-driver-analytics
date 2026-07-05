@@ -1,5 +1,10 @@
+-- Description: Replaces one source month in bronze from a full staged snapshot.
+-- Created: 2026-07-05
+-- Author: Luis G (https://github.com/Lu1sG4rc14)
+
 BEGIN TRANSACTION;
 
+-- Rebuilds are scoped to one monthly partition to avoid rewriting history.
 DELETE FROM `{project_id}.{bronze_dataset}.yellow_trips_raw`
 WHERE meta_source_month = DATE('{source_month}-01');
 
@@ -35,6 +40,8 @@ INSERT INTO `{project_id}.{bronze_dataset}.yellow_trips_raw` (
   meta_ingested_at
 )
 WITH normalized AS (
+  -- Staging is a run-scoped safety buffer. Bronze receives only rows that
+  -- match the target source month and can be safely cast to the canonical schema.
   SELECT
     SAFE_CAST(vendor_id AS INT64) AS vendor_id,
     SAFE_CAST(pickup_datetime AS DATETIME) AS pickup_datetime,
@@ -58,6 +65,8 @@ WITH normalized AS (
     DATE(SAFE_CAST(pickup_datetime AS DATETIME)) AS calc_pickup_date,
     EXTRACT(HOUR FROM SAFE_CAST(pickup_datetime AS DATETIME)) AS calc_pickup_hour,
     DATE(SAFE_CAST(dropoff_datetime AS DATETIME)) AS calc_dropoff_date,
+    -- The TLC source does not provide a stable trip ID, so the internal key is
+    -- derived from source month and source row number after append/rebuild checks.
     TO_HEX(SHA256(CONCAT(CAST(meta_source_month AS STRING), '#', CAST(meta_source_row_number AS STRING)))) AS meta_trip_key,
     SAFE_CAST(meta_source_row_number AS INT64) AS meta_source_row_number,
     SAFE_CAST(meta_source_month AS DATE) AS meta_source_month,

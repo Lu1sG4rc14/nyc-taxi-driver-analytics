@@ -1,3 +1,9 @@
+"""Tests for Parquet normalization and append-delta detection.
+
+Created: 2026-07-05
+Author: Luis G (https://github.com/Lu1sG4rc14)
+"""
+
 from __future__ import annotations
 
 import sys
@@ -14,7 +20,10 @@ from taxi_ingest.parquet_delta import canonical_raw_table, prepare_load_table, t
 
 
 class ParquetDeltaTests(unittest.TestCase):
+    """Validates incremental load-mode decisions and generated metadata."""
+
     def test_append_only_change_loads_only_new_rows(self) -> None:
+        """Ensures append-only source changes load only newly appended rows."""
         first_snapshot = canonical_raw_table(_source_table([1, 2]))
         second_snapshot = canonical_raw_table(_source_table([1, 2, 3]))
 
@@ -52,6 +61,7 @@ class ParquetDeltaTests(unittest.TestCase):
         self.assertEqual(delta["vendor_id"].to_pylist(), [3])
 
     def test_prefix_change_rebuilds_month(self) -> None:
+        """Ensures changed historical rows trigger a month rebuild."""
         first_snapshot = canonical_raw_table(_source_table([1, 2]))
         changed_snapshot = canonical_raw_table(_source_table([9, 2, 3]))
 
@@ -67,6 +77,7 @@ class ParquetDeltaTests(unittest.TestCase):
         self.assertEqual(start_offset, 0)
 
     def test_force_reload_rebuilds_from_first_row(self) -> None:
+        """Ensures explicit force reload bypasses append-delta detection."""
         snapshot = canonical_raw_table(_source_table([1, 2, 3]))
 
         mode, start_offset = _decide_load_mode(
@@ -83,6 +94,14 @@ class ParquetDeltaTests(unittest.TestCase):
 
 
 def _source_table(vendor_ids: list[int]) -> pa.Table:
+    """Builds a minimal TLC-like Arrow table for unit tests.
+
+    Args:
+        vendor_ids: Vendor IDs used to distinguish row order and content.
+
+    Returns:
+        Arrow table with the source columns required by canonicalization.
+    """
     row_count = len(vendor_ids)
     return pa.table(
         {

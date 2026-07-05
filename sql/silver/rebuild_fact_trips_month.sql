@@ -1,5 +1,10 @@
+-- Description: Rebuilds the cleaned and enriched trip fact table for one month.
+-- Created: 2026-07-05
+-- Author: Luis G (https://github.com/Lu1sG4rc14)
+
 BEGIN TRANSACTION;
 
+-- Rebuilds are partition-scoped so corrections only affect the selected month.
 DELETE FROM `{project_id}.{silver_dataset}.fact_trips`
 WHERE meta_source_month_dt = DATE('{source_month}-01');
 
@@ -29,12 +34,14 @@ WITH enriched AS (
     r.meta_source_month AS meta_source_month_dt,
     r.meta_source_row_number AS meta_source_row_number_vl,
     r.meta_ingested_at AS meta_ingested_at_dt,
+    -- calc_* fields derive reusable temporal features from source timestamps.
     r.calc_pickup_date AS calc_pickup_date_dt,
     r.calc_pickup_hour AS calc_pickup_hour_vl,
     r.calc_dropoff_date AS calc_dropoff_date_dt,
     EXTRACT(DAYOFWEEK FROM r.calc_pickup_date) AS calc_pickup_day_of_week_vl,
     FORMAT_DATE('%A', r.calc_pickup_date) AS calc_pickup_day_name_ds,
     TIMESTAMP_DIFF(TIMESTAMP(r.dropoff_datetime), TIMESTAMP(r.pickup_datetime), SECOND) / 60.0 AS calc_duration_minutes_vl,
+    -- geo_* fields enrich raw location IDs with TLC zone lookup descriptors.
     pu.borough AS geo_pickup_borough_ds,
     pu.zone AS geo_pickup_zone_ds,
     pu.service_zone AS geo_pickup_service_zone_ds,
@@ -50,9 +57,11 @@ WITH enriched AS (
       WHEN 6 THEN 'Voided trip'
       ELSE 'Other'
     END AS calc_payment_type_name_ds,
+    -- Earnings metrics use total_amount because it approximates gross driver-facing revenue.
     SAFE_DIVIDE(CAST(r.tip_amount AS FLOAT64), NULLIF(CAST(r.fare_amount AS FLOAT64), 0)) AS calc_tip_pct_vl,
     SAFE_DIVIDE(CAST(r.total_amount AS FLOAT64) * 60.0, NULLIF(TIMESTAMP_DIFF(TIMESTAMP(r.dropoff_datetime), TIMESTAMP(r.pickup_datetime), SECOND) / 60.0, 0)) AS calc_earnings_per_hour_vl,
     SAFE_DIVIDE(CAST(r.total_amount AS FLOAT64), NULLIF(r.trip_distance, 0)) AS calc_earnings_per_mile_vl,
+    -- Airport IDs are TLC zone IDs for EWR, JFK, and LaGuardia.
     r.pickup_location_id IN (1, 132, 138) AS flag_airport_pickup_lg,
     r.dropoff_location_id IN (1, 132, 138) AS flag_airport_dropoff_lg
   FROM `{project_id}.{bronze_dataset}.yellow_trips_raw` r
@@ -65,6 +74,8 @@ WITH enriched AS (
 flagged AS (
   SELECT
     *,
+    -- Quality flags are conservative business rules for analysis eligibility;
+    -- raw records remain preserved in bronze even when excluded from gold marts.
     ARRAY_CONCAT(
       IF(pickup_dt IS NULL OR dropoff_dt IS NULL, ['missing_datetime'], []),
       IF(calc_duration_minutes_vl <= 0, ['non_positive_duration'], []),

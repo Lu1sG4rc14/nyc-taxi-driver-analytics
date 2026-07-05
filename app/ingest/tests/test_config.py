@@ -1,3 +1,9 @@
+"""Tests for source-month selection and backfill configuration.
+
+Created: 2026-07-05
+Author: Luis G (https://github.com/Lu1sG4rc14)
+"""
+
 from __future__ import annotations
 
 import sys
@@ -11,7 +17,10 @@ from taxi_ingest.config import _parse_args, _resolve_source_selection
 
 
 class ConfigSourceSelectionTests(unittest.TestCase):
+    """Validates CLI and environment source selection behavior."""
+
     def test_source_date_selects_only_containing_month(self) -> None:
+        """Ensures a specific source date resolves to its containing month."""
         args = _parse_args(["--source-date", "2023-02-15"])
 
         with patch.dict("os.environ", {}, clear=True):
@@ -21,6 +30,7 @@ class ConfigSourceSelectionTests(unittest.TestCase):
         self.assertFalse(selection.skip_missing_sources)
 
     def test_source_start_date_selects_inclusive_month_range(self) -> None:
+        """Ensures a backfill date range includes both boundary months."""
         args = _parse_args(
             [
                 "--source-start-date",
@@ -37,6 +47,7 @@ class ConfigSourceSelectionTests(unittest.TestCase):
         self.assertTrue(selection.skip_missing_sources)
 
     def test_explicit_months_take_precedence_over_range_backfill(self) -> None:
+        """Ensures explicit months override broader range-backfill arguments."""
         args = _parse_args(
             [
                 "--source-month",

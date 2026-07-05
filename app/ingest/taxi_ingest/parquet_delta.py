@@ -1,3 +1,9 @@
+"""Parquet normalization and append-delta utilities.
+
+Created: 2026-07-05
+Author: Luis G (https://github.com/Lu1sG4rc14)
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -57,15 +63,44 @@ SOURCE_COLUMN_CANDIDATES: dict[str, tuple[str, ...]] = {
 
 
 def month_start(source_month: str) -> date:
+    """Converts a `YYYY-MM` source month into its first calendar day.
+
+    Args:
+        source_month: Month string in `YYYY-MM` format.
+
+    Returns:
+        Date representing the first day of the month.
+    """
     year, month = source_month.split("-")
     return date(int(year), int(month), 1)
 
 
 def read_source_table(path: Path) -> pa.Table:
+    """Reads a source Parquet file into an Arrow table.
+
+    Args:
+        path: Local Parquet file path.
+
+    Returns:
+        Arrow table with the source file schema.
+    """
     return pq.read_table(path)
 
 
 def canonical_raw_table(source_table: pa.Table) -> pa.Table:
+    """Projects a TLC source table into the canonical raw schema.
+
+    Monthly TLC files can vary in column names and physical types. This
+    function picks the first known source column for each canonical field,
+    casts it to the expected Arrow type, and fills missing optional fields
+    with nulls.
+
+    Args:
+        source_table: Arrow table read from a TLC source Parquet file.
+
+    Returns:
+        Arrow table with canonical column names and types.
+    """
     arrays: list[pa.Array | pa.ChunkedArray] = []
     names: list[str] = []
 
@@ -85,6 +120,15 @@ def canonical_raw_table(source_table: pa.Table) -> pa.Table:
 
 
 def table_hash(table: pa.Table) -> str:
+    """Computes a deterministic content hash for an Arrow table.
+
+    Args:
+        table: Canonical Arrow table or slice to hash.
+
+    Returns:
+        SHA-256 hexadecimal digest that is stable across runs for equivalent
+        table content.
+    """
     digest = hashlib.sha256()
     for column_name in table.column_names:
         digest.update(column_name.encode("utf-8"))
@@ -107,6 +151,25 @@ def prepare_load_table(
     start_offset: int,
     ingested_at: datetime | None = None,
 ) -> pa.Table:
+    """Adds ingestion metadata columns to a delta or rebuild slice.
+
+    The source does not provide a stable trip identifier. The pipeline keeps
+    source row number and month as lineage, then bronze SQL derives a stable
+    `meta_trip_key` from those values.
+
+    Args:
+        canonical_table: Canonical rows that should be loaded to BigQuery.
+        source_month: Source month in `YYYY-MM` format.
+        source_url: Original source file URL.
+        source_etag: Source ETag captured during metadata inspection.
+        ingestion_batch_id: Unique run identifier.
+        start_offset: Zero-based number of rows skipped from the source file.
+        ingested_at: Optional ingestion timestamp. Defaults to current UTC.
+
+    Returns:
+        Arrow table with source columns first and `meta_` lineage columns at
+        the end.
+    """
     ingested_at = ingested_at or datetime.now(timezone.utc)
     row_count = canonical_table.num_rows
 
@@ -134,11 +197,26 @@ def prepare_load_table(
 
 
 def write_parquet(table: pa.Table, path: Path) -> None:
+    """Writes an Arrow table as Snappy-compressed Parquet.
+
+    Args:
+        table: Arrow table to write.
+        path: Destination file path.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, path, compression="snappy")
 
 
 def _first_existing(table: pa.Table, candidates: tuple[str, ...]) -> str | None:
+    """Finds the first candidate column present in a table.
+
+    Args:
+        table: Arrow table to inspect.
+        candidates: Candidate source column names in priority order.
+
+    Returns:
+        First matching column name, or `None` when no candidate exists.
+    """
     existing = set(table.column_names)
     for candidate in candidates:
         if candidate in existing:
@@ -147,6 +225,15 @@ def _first_existing(table: pa.Table, candidates: tuple[str, ...]) -> str | None:
 
 
 def _stable_value(value: Any) -> bytes:
+    """Serializes a Python value into stable bytes for hashing.
+
+    Args:
+        value: Scalar value from an Arrow column.
+
+    Returns:
+        Byte representation that treats nulls, NaN values, and date/time
+        values consistently.
+    """
     if value is None:
         return b"<NULL>"
     if isinstance(value, float) and math.isnan(value):
